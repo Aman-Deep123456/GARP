@@ -1,0 +1,16 @@
+{
+  "name": "@grap/payment-service",
+  "version": "1.0.0",
+  "description": "GRAP Payment Service — Razorpay UPI sandbox with idempotency",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "mongoose": "^8.2.0",
+    "razorpay": "^2.9.2",
+    "uuid": "^9.0.0",
+    "dotenv": "^16.4.4"
+  }
+}
