@@ -1,0 +1,43 @@
+# GRAP Platform — SLA Alerting Rules (Phase 2)
+# Derived from first-principles architecture analysis.
+
+groups:
+  - name: grap_latency_slas
+    rules:
+      - alert: FraudEngineSLABreach
+        expr: histogram_quantile(0.99, rate(fraud_engine_duration_seconds_bucket[5m])) > 30
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fraud engine P99 latency exceeds 30s SLA"
+          description: "P99={{ $value }}s. SLA=30s."
+
+      - alert: FlinkRtUpdateSLABreach
+        expr: histogram_quantile(0.99, rate(flink_rt_update_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Flink Rt update P99 latency exceeds 5s SLA"
+          description: "P99={{ $value }}s. SLA=5s."
+
+      - alert: KafkaIngestionSLABreach
+        expr: histogram_quantile(0.99, rate(kafka_ingestion_duration_seconds_bucket[5m])) > 0.5
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka ingestion P99 latency exceeds 500ms SLA"
+          description: "P99={{ $value }}s. SLA=500ms."
+
+  - name: grap_fraud_alerts
+    rules:
+      - alert: HighFraudRejectionRate
+        expr: rate(fraud_rejections_total[5m]) / rate(fraud_checks_total[5m]) > 0.50
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Fraud rejection rate exceeds 50%"
+          description: "{{ $value | humanizePercentage }} of claims rejected in last 5 minutes."
