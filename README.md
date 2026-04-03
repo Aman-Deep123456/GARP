@@ -31,7 +31,7 @@
 
 ## Overview
 
-GRAP is a **parametric income insurance platform** that automatically compensates food delivery partners (Zomato, Swiggy) when external disruptions — extreme rainfall, hazardous AQI, floods, or social events — prevent them from earning. When objective indices breach thresholds, claims trigger and pay out within 48 hours. No forms. No phone calls. No waiting.
+GRAP is a **parametric income insurance platform** that automatically compensates gig delivery workers — across **any delivery platform** (food, grocery, logistics) — when external disruptions like extreme rainfall, hazardous AQI, floods, curfews, or civil unrest prevent them from earning. When objective indices breach thresholds, claims trigger and pay out within 48 hours. No forms. No phone calls. No waiting.
 
 > **When it rains in Kurla, Ramesh should not lose a week's income. GRAP ensures he doesn't — automatically, instantly, and fairly.**
 
@@ -41,9 +41,45 @@ GRAP is a **parametric income insurance platform** that automatically compensate
 
 | # | Rule | Detail |
 |---|------|--------|
-| 1 | **Persona** | Food Delivery Partners on Zomato / Swiggy exclusively |
+| 1 | **Persona** | Gig delivery workers on **any platform** — food, grocery, hyperlocal, logistics |
 | 2 | **Coverage** | Lost income from external disruptions only — vehicle, health, accident, and life insurance are excluded |
 | 3 | **Pricing** | Weekly dynamic premium (₹12–55/week) via Tweedie GLM, recalculated every Monday at 02:00 IST |
+
+<br/>
+
+## Covered Disruptions
+
+GRAP covers **any external event that prevents a delivery worker from earning** — as long as the disruption is objectively measurable and independent of the worker's own choices.
+
+| Disruption Type | Real-World Example | Trigger Source | Threshold |
+|----------------|--------------------|---------------|-----------|
+| 🌧️ **Extreme Rainfall / Floods** | Mumbai monsoon waterlogging, Chennai cyclone flooding | OpenWeather API, Open-Meteo | Rain > 7.5 mm/hr (normalised > 0.40) |
+| 🏭 **Hazardous Air Quality** | Delhi winter smog (AQI > 400), stubble burning season | CPCB API Setu | AQI > 300 (normalised > 0.60) |
+| 🚫 **Curfew / Bandh / Strike** | State-imposed curfew, political bandh, transport strike | OVA ratio collapse + news NER pipeline | OVA < 0.30 across ≥3 wards |
+| ⚠️ **Riots / Civil Unrest (Danga)** | Communal violence, protests blocking roads | Social disruption Kafka topic + OVA monitoring | Zone-wide OVA collapse + police advisory signals |
+| 🦠 **Pandemic / Health Emergency** | COVID-style lockdown, containment zone declaration | Government gazette + manual trigger | Admin-initiated zone lockdown flag |
+| 📡 **Platform-Wide Outage** | Delivery app server crash, payment system failure | KDI + EKCT coherence test | KDI < 0.25 across ALL wards (excluded — not environmental) |
+
+> **Key principle:** GRAP pays only for disruptions the worker **cannot control**. Platform outages (app-level throttling or server crashes) are detected and excluded using the Kinematic Divergence Index — no delivery platform can fake rainfall.
+
+<br/>
+
+## How a Claim Travels
+
+Every claim passes through a **9-state DFA** (Deterministic Finite Automaton) with a **5-check validation gate**. Here's the full journey:
+
+![Claim Initation Diagram](assets/claim_initiation_process_flowchart.png)
+
+### Disruption-Specific Scenarios
+
+| Scenario | What Triggers | What GRAP Does |
+|----------|--------------|----------------|
+| **Monsoon flooding in Kurla** | Rain > 7.5 mm/hr for 1+ hours | Rt crosses 0.85, gate timer starts, V1-V5 pass, payout ₹50-150 |
+| **Delhi AQI hits 450** | AQI normalised > 0.60 | Workers can't safely deliver, claims auto-trigger across affected wards |
+| **Political bandh in Mumbai** | OVA ratio collapses (<0.30) across wards | V2 checks KDI — workers trying to move but can't → claims approved |
+| **Communal riots (danga)** | Social disruption signals + OVA collapse | Same as bandh — physical impediment confirmed by kinematic data |
+| **COVID containment zone** | Admin sets zone lockdown flag | All workers in zone get claims; V4 confirms they stopped delivering |
+| **Delivery app server crash** | KDI collapses but NO rainfall | EKCT fails (R_city < 0.40) → claims **rejected** — not an environmental cause |
 
 <br/>
 
@@ -211,8 +247,26 @@ grap/
 | `ln(µᵢ) = β₀ + Σβⱼxⱼ` — Tweedie GLM premium | `services/ml-pipeline/main.py` |
 | `Zᵢ = nᵢ/(nᵢ+k)` — Bühlmann credibility | `services/ml-pipeline/main.py` |
 | `Y = (WeeklySI/7) / DST × Hours` — pro-rata payout | `apps/dfa-engine/src/dfa/state-machine.js` |
-| `F = Σλⱼ·sⱼ, reject if F > 0.75` — composite fraud score | `services/fraud-engine/main.py` |
+| `F = Σλⱼ·sⱼ, reject if F > 0.75` — composite fraud (dynamic λ) | `services/fraud-engine/main.py` |
+| `KDI_g(t) = E_locomotion_g / E_baseline_g` — Kinematic Divergence Index | `services/flink-jobs/risk_scorer.py` |
+| `EKCT: R_city > 0.40 ∧ KDI_city < 0.30` — Environmental-Kinematic Coherence | `services/flink-jobs/risk_scorer.py` |
+| `DBS = 0.40·SFR + 0.35·GRI + 0.25·AE` — Delivery Behaviour Score | `apps/dfa-engine/src/server.js` |
+| `λⱼ = αⱼ/(αⱼ+βⱼ)` — Bayesian Beta fraud weight update | `services/ml-pipeline/main.py` |
 | `SHA256(claim‖worker‖week)` — idempotency key | `apps/dfa-engine/src/server.js` |
+
+<br/>
+
+## Latency SLAs
+
+| Component | P50 | P99 | SLA | Derivation |
+|-----------|-----|-----|-----|------------|
+| SDK → Kafka ingestion | 200ms | 300ms | **500ms** | gRPC RTT + batch.linger.ms + replication ack + 2× P99 safety |
+| Flink Rt update (EMA) | 500ms | 2s | **5s** | RocksDB checkpoint alignment worst case |
+| S2 spatial join (Redis) | <1ms | 5ms | **20ms** | O(log k), k=8 cells |
+| Fraud engine (4 layers) | 800ms | 3s | **30s** | Play Integrity API bound (~2s P99) + 10× safety |
+| Razorpay UPI call | 1s | 5s | **60s** | External payment API SLA (async) |
+| GLM retrain (Monday cron) | 3min | 8min | **20min** | scikit-learn TweedieRegressor on 4-week Parquet |
+| End-to-end: disruption → UPI | — | — | **48h** | Regulatory commitment |
 
 <br/>
 
@@ -262,7 +316,7 @@ Terminal states: `SETTLED` (success) · `REJECTED` (fraud) · `FAILED` (payment 
 | Weather falls back to mock data | Static risk values when API key absent | Set `OPENWEATHER_KEY` and `APISETU_KEY` in `.env` |
 | S2 cell computation approximated | Slightly imprecise geofence boundaries | Production uses `s2sphere` Python library |
 | 60-min claim gate | Slow for live demos | Override with `CLAIM_GATE_MINUTES=1` |
-| Platform OAuth simulated | No real Zomato/Swiggy login | Production requires data-sharing MOU |
+| Platform OAuth simulated | No real platform login | Production requires data-sharing MOU with delivery platforms |
 
 <br/>
 
